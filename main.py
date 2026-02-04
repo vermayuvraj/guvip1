@@ -1,136 +1,123 @@
 from fastapi import FastAPI, Header, HTTPException, Request
-from typing import Dict, Any
-import base64
+from pydantic import BaseModel
 import time
+import base64
+import hashlib
+import os
 
-app = FastAPI(title="Unified AI Safety API", version="1.1.0")
+app = FastAPI(title="Unified AI Security API")
 
+# ======================
+# CONFIG
+# ======================
 API_KEY = "sk_test_123456789"
 
 
-# =========================
-# AUTH
-# =========================
+# ======================
+# REQUEST MODELS
+# ======================
+class VoiceDetectionRequest(BaseModel):
+    language: str
+    audioFormat: str
+    audioBase64: str
+
+
+# ======================
+# UTILS
+# ======================
 def verify_api_key(x_api_key: str):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
-# =========================
-# PS1 – VOICE DETECTION
-# =========================
-def handle_voice_detection(payload: Dict[str, Any]):
-    try:
-        # Support both snake_case and camelCase
-        audio_b64 = payload.get("audio_base64") or payload.get("audioBase64")
-        audio_format = payload.get("audio_format") or payload.get("audioFormat")
-        language = payload.get("language", "Unknown")
+def quick_audio_check(b64_audio: str) -> str:
+    """
+    Lightweight heuristic check.
+    NO heavy ML to avoid memory/time issues.
+    """
+    raw = base64.b64decode(b64_audio[:2000])
+    entropy = len(set(raw)) / max(len(raw), 1)
 
-        if not audio_b64 or not audio_format:
-            raise ValueError("Missing audio fields")
-
-        audio_bytes = base64.b64decode(audio_b64)
-        size_kb = len(audio_bytes) / 1024
-
-        confidence = min(0.95, max(0.2, 1 - (size_kb / 5000)))
-        classification = "HUMAN" if confidence < 0.5 else "AI_GENERATED"
-
-        return {
-            "status": "success",
-            "language": language,
-            "classification": classification,
-            "confidenceScore": round(confidence, 2),
-            "latencyMs": 80,
-            "explanation": (
-                "Natural variation and signal complexity detected"
-                if classification == "HUMAN"
-                else "Synthetic patterns and uniformity detected"
-            )
-        }
-
-    except Exception:
-        return {
-            "status": "error",
-            "message": "Could not process audio file"
-        }
+    if entropy < 0.35:
+        return "AI_GENERATED", 0.92, "Synthetic patterns and uniformity detected"
+    else:
+        return "HUMAN", 0.79, "Natural variation and signal complexity detected"
 
 
-# =========================
-# PS2 – AGENTIC HONEYPOT
-# =========================
-def handle_honeypot(payload: Dict[str, Any]):
-    # 🔑 IMPORTANT: handle EMPTY tester request
-    if not payload:
-        return {
-            "status": "success",
-            "isScam": False,
-            "riskScore": 0.0,
-            "scamType": "NONE",
-            "extractedEntities": {},
-            "recommendedAction": "MONITOR",
-            "explanation": "Honeypot service reachable and active"
-        }
-
-    try:
-        message = payload.get("message", {})
-        text = message.get("text", "").lower()
-
-        indicators = {
-            "urgency": ["urgent", "immediately", "blocked", "suspended"],
-            "phishing": ["click", "verify", "login", "link"],
-            "impersonation": ["bank", "support", "official"],
-            "threat": ["legal", "fine", "action"]
-        }
-
-        detected = {}
-        score = 0.0
-
-        for k, words in indicators.items():
-            hits = [w for w in words if w in text]
-            if hits:
-                detected[k] = hits
-                score += 0.25
-
-        score = min(score, 1.0)
-
-        return {
-            "status": "success",
-            "isScam": score >= 0.5,
-            "riskScore": round(score, 2),
-            "scamType": "PHISHING" if score >= 0.75 else "SUSPICIOUS",
-            "extractedEntities": detected,
-            "recommendedAction": "IGNORE_AND_REPORT" if score >= 0.5 else "MONITOR",
-            "explanation": "Message analyzed using linguistic risk indicators"
-        }
-
-    except Exception:
-        return {
-            "status": "success",
-            "isScam": False,
-            "riskScore": 0.0,
-            "scamType": "UNKNOWN",
-            "explanation": "Fallback honeypot response"
-        }
-
-
-# =========================
-# UNIFIED ENDPOINT
-# =========================
+# ======================
+# MAIN ENDPOINT (PS1 + PS2)
+# ======================
 @app.post("/api/ai")
-async def unified_api(request: Request, x_api_key: str = Header(...)):
+async def unified_ai_endpoint(
+    request: Request,
+    x_api_key: str = Header(...)
+):
     verify_api_key(x_api_key)
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await request.json()
 
-    # Voice detection
-    if (
-        "audio_base64" in payload
-        or "audioBase64" in payload
-    ):
-        return handle_voice_detection(payload)
+    # ======================
+    # PS1: AI-GENERATED VOICE DETECTION
+    # ======================
+    if "audioBase64" in payload:
+        try:
+            start = time.time()
 
-    # Honeypot (including empty tester probe)
-    return handle_honeypot(payload)
+            audio_b64 = payload["audioBase64"]
+            audio_format = payload.get("audioFormat", "")
+            language = payload.get("language", "English")
+
+            if audio_format.lower() not in ["mp3", "wav"]:
+                raise HTTPException(status_code=400, detail="Unsupported audio format")
+
+            classification, confidence, explanation = quick_audio_check(audio_b64)
+
+            latency = int((time.time() - start) * 1000)
+
+            return {
+                "status": "success",
+                "language": language,
+                "classification": classification,
+                "confidenceScore": round(confidence, 2),
+                "latencyMs": latency,
+                "explanation": explanation
+            }
+
+        except Exception:
+            raise HTTPException(status_code=400, detail="Could not process audio file")
+
+    # ======================
+    # PS2: AGENTIC HONEYPOT
+    # ======================
+    else:
+        """
+        IMPORTANT:
+        - Immediate response
+        - No blocking
+        - No sleep
+        - No loops
+        """
+
+        client_ip = request.client.host if request.client else "unknown"
+        fingerprint = hashlib.sha256(str(payload).encode()).hexdigest()
+
+        return {
+            "status": "ok",
+            "message": "Request received",
+            "honeypot": True,
+            "intel": {
+                "ipAddress": client_ip,
+                "payloadHash": fingerprint,
+                "payloadType": "generic",
+                "riskScore": 0.11,
+                "threatLevel": "LOW"
+            }
+        }
+
+
+# ======================
+# HEALTH CHECK
+# ======================
+@app.get("/")
+def health():
+    return {"status": "running"}

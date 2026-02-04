@@ -1,11 +1,7 @@
-# Virtual environment
 venv/
-.env/
-
-# Python cache
 __pycache__/
 *.pyc
-
-# OS files
+*.mp3
+*.wav
+.env
 .DS_Store
-Thumbs.db
